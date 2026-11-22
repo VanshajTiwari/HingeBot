@@ -50,6 +50,12 @@ public class RightSwipeExecutor {
 
     private static final String TAG = "RightSwipeExecutor";
 
+    /**
+     * Keep soft keyboard hidden during like flow to prevent keyboard overlay and ensure clear
+     * gesture tapping on the Send Like button.
+     */
+    private static final boolean SUPPRESS_KEYBOARD = true;
+
     // ── Browse (scroll) behaviour ─────────────────────────────────────────────
     /** Fewest / most scrolls planned before we look for a heart. */
     private static final int  MIN_SCROLLS        = 1;
@@ -67,13 +73,23 @@ public class RightSwipeExecutor {
     private static final long TAP_MIN_MS         = 55;
     private static final long TAP_MAX_MS         = 130;
     /** Pause between tapping the heart and looking for the "Send Like" button. */
-    private static final long SHEET_WAIT_MIN_MS  = 700;
-    private static final long SHEET_WAIT_MAX_MS  = 1400;
+    private static final long SHEET_WAIT_MIN_MS  = 500;
+    private static final long SHEET_WAIT_MAX_MS  = 900;
     /** How many times to look for the "Send Like" node before giving up / falling back. */
-    private static final int  SEND_LIKE_MAX_ATTEMPTS = 4;
+    private static final int  SEND_LIKE_MAX_ATTEMPTS = 8;
     /** Gap between "Send Like" lookups, in milliseconds. */
-    private static final long SEND_LIKE_RETRY_MS = 300;
+    private static final long SEND_LIKE_RETRY_MS = 200;
     /** Wait for Hinge to complete the like transition. */
+    /** If no sheet shows up after the heart tap, re-tap a (freshly chosen) heart this many times. */
+    private static final int  MAX_HEART_RETRIES  = 2;
+    /** Max times we press Send Like when the sheet refuses to close. */
+    private static final int  MAX_SEND_CLICKS    = 3;
+    /** After pressing Send Like, wait this long, then check the sheet really closed. */
+    private static final long VERIFY_MIN_MS      = 700;
+    private static final long VERIFY_MAX_MS      = 1000;
+    /** BACK presses allowed when cleaning up an open sheet after a failed like. */
+    private static final int  MAX_CLEANUP_BACKS  = 2;
+    private static final long CLEANUP_BACK_WAIT_MS = 600;
     private static final long POST_LIKE_MIN_MS   = 1000;
     private static final long POST_LIKE_MAX_MS   = 1600;
 
@@ -90,7 +106,7 @@ public class RightSwipeExecutor {
     private static final int MAX_LABEL_LENGTH = 40;
     private static final String[] LIKE_PHRASES = { "like", "heart" };
     private static final String[] EXCLUDE_PHRASES = {
-            "rose", "comment", "edit", "tab", "nav", "standouts", "match", "send"
+            "rose", "comment", "edit", "tab", "nav", "standouts", "match"
     };
 
     public interface CompletionCallback {
@@ -116,6 +132,9 @@ public class RightSwipeExecutor {
     private int generation = 0;
     /** True while a like flow owns the (hidden) soft keyboard. */
     private boolean flowActive = false;
+    /** Per-flow counters (reset in execute()). */
+    private int heartRetries = 0;
+    private int sendClicks = 0;
 
     /** Soft-keyboard show mode to restore once the like flow ends. */
     private int previousKeyboardMode = AccessibilityService.SHOW_MODE_AUTO;
@@ -146,6 +165,8 @@ public class RightSwipeExecutor {
         // cover the Send Like button area or receive a stray tap.
         final boolean keyboardSuppressed = suppressKeyboard();
         flowActive = true;
+        heartRetries = 0;
+        sendClicks = 0;
 
         // PHASE 1: browse - random number of scrolls, then pick a visible heart.
         final int planned = pickScrollCount();
@@ -273,9 +294,12 @@ public class RightSwipeExecutor {
     }
 
     /**
-     * Looks for the "Send Like" button and clicks it, retrying a few times while the sheet
-     * finishes animating in. A coordinate-tap fallback is only used when it is provably safe
-     * (no keyboard on screen and no focused text field).
+     * Finds the "Send Like" button and presses it, then VERIFIES the sheet really closed.
+     *
+     * <p>A RIGHT is only reported as successful once the like is confirmed sent. If the sheet never
+     * showed up the heart is re-tapped; if the button cannot be pressed, the sheet is closed again
+     * and the step is reported as FAILED, so the state machine does not advance and the very
+     * same profile is retried with RIGHT instead of being rejected by the next LEFT.</p>
      */
     private void attemptSendLike(AccessibilityNodeInfo root, int sw, int sh,
                                  boolean keyboardSuppressed, boolean sawFocusedInput,
@@ -284,22 +308,48 @@ public class RightSwipeExecutor {
 
         AccessibilityNodeInfo sheetRoot = getBestRootNode(root);
 
-        // Remember whether a text field had input focus BEFORE we clear it: that is a
-        // strong hint that the keyboard is (or was just) up.
         if (sheetRoot != null && sheetRoot.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) != null) {
             sawFocusedInput = true;
         }
+        // NOTE: the comment field is deliberately NOT defocused. Clearing focus makes Hinge
+        // collapse the comment sheet, which removed "Send Like" and caused the missed 2nd click.
+        // The soft keyboard is already held hidden, so no stray typing can happen.
 
-        // Defocus any active comment EditText field programmatically
-        if (sheetRoot != null) {
-            clearEditTextFocus(sheetRoot);
+        AccessibilityNodeInfo sendNode = findSendLikeAnywhere(sheetRoot, sh);
+
+        if (sendNode != null) {
+            if (sendClicks >= MAX_SEND_CLICKS) {
+                Log.w(TAG, "Send Like pressed " + sendClicks + "x but the sheet is still open.");
+                failAndCleanUp(root, sh, token, "RIGHT skipped: Send Like did not go through", callback);
+                return;
+            }
+            sendClicks++;
+            if (clickSendLike(sendNode, sw, sh)) {
+                Log.i(TAG, "Pressed Send Like (press #" + sendClicks + "); verifying the sheet closes.");
+                verifySendLikeSent(root, sw, sh, keyboardSuppressed, token, callback);
+                return;
+            }
+            Log.w(TAG, "Send Like found but could not be pressed.");
         }
 
-        AccessibilityNodeInfo sendNode = sheetRoot != null ? findSendLikeNode(sheetRoot) : null;
-        if (sendNode != null && performNodeClickProgrammaticOnly(sendNode)) {
-            Log.i(TAG, "Clicked Send Like button programmatically.");
-            finishAfterTransition(token, callback);
-            return;
+        // The heart tap may simply have missed (no sheet, no comment box anywhere): tap again.
+        boolean sheetOpen = sheetRoot != null && (sendNode != null || hasEditText(sheetRoot));
+        if (!sheetOpen && attempt + 1 == Math.max(2, SEND_LIKE_MAX_ATTEMPTS / 2)
+                && heartRetries < MAX_HEART_RETRIES) {
+            List<Candidate> again = sheetRoot != null
+                    ? collectLikeCandidates(sheetRoot, sw, sh) : new ArrayList<Candidate>();
+            if (!again.isEmpty()) {
+                heartRetries++;
+                Log.w(TAG, "No Send Like sheet after heart tap; re-tapping heart (retry " + heartRetries + ").");
+                Candidate c = chooseCandidate(again, sh);
+                tapNodeHumanly(c, () -> {
+                    if (isStale(token)) return;
+                    handler.postDelayed(
+                            () -> attemptSendLike(root, sw, sh, keyboardSuppressed, false, 0, token, callback),
+                            randomBetween(SHEET_WAIT_MIN_MS, SHEET_WAIT_MAX_MS));
+                });
+                return;
+            }
         }
 
         // Not found yet - the sheet may still be animating in. Look again shortly.
@@ -311,21 +361,55 @@ public class RightSwipeExecutor {
             return;
         }
 
-        // Last resort: blind tap on the Send Like position (80% height, above the tab bar).
-        // NEVER do this with the keyboard up - that position is on the keyboard and would
-        // type a character into the comment box.
-        boolean keyboardOnScreen = getKeyboardBounds() != null;
-        boolean maybeKeyboard    = !keyboardSuppressed && sawFocusedInput;
-        if (!keyboardOnScreen && !maybeKeyboard) {
-            Log.w(TAG, "Send Like node not found; using safe fallback tap.");
-            dispatchTapAt((int) (sw * 0.50), (int) (sh * 0.80), randomBetween(TAP_MIN_MS, TAP_MAX_MS), null);
-            finishAfterTransition(token, callback);
-        } else {
-            Log.w(TAG, "Send Like node not found and keyboard may be open; not tapping blindly.");
-            finishFlow();
-            if (callback != null) {
-                callback.onRightSwipeCompleted(false, "RIGHT skipped: Send Like not found (keyboard open)");
+        // Out of attempts. NO blind tap any more: a blind tap that misses used to be reported
+        // as a success, which advanced the sequence and got the profile rejected by the next LEFT.
+        Log.w(TAG, "Send Like never found; failing this step so the same profile is retried.");
+        dumpLowerHalf(sheetRoot, sh);
+        dumpAllWindows();
+        failAndCleanUp(root, sh, token, "RIGHT skipped: Send Like not found", callback);
+    }
+
+    /** After pressing Send Like, confirm the sheet is gone. Re-presses if it is still there. */
+    private void verifySendLikeSent(AccessibilityNodeInfo root, int sw, int sh,
+                                    boolean keyboardSuppressed, int token, CompletionCallback callback) {
+        handler.postDelayed(() -> {
+            if (isStale(token)) return;
+            AccessibilityNodeInfo r = getBestRootNode(root);
+            boolean stillThere = findSendLikeAnywhere(r, sh) != null;
+            if (!stillThere) {
+                finishAfterTransition(token, callback);
+                return;
             }
+            Log.w(TAG, "Send Like still on screen after press #" + sendClicks + "; trying again.");
+            attemptSendLike(root, sw, sh, keyboardSuppressed, false, 0, token, callback);
+        }, randomBetween(VERIFY_MIN_MS, VERIFY_MAX_MS));
+    }
+
+    /**
+     * Closes a half-finished like sheet (BACK only while the sheet / comment box is really open,
+     * never on the plain profile screen), then reports FAILURE.
+     */
+    private void failAndCleanUp(AccessibilityNodeInfo root, int sh, int token,
+                                String reason, CompletionCallback callback) {
+        cleanUpSheet(root, sh, token, MAX_CLEANUP_BACKS, reason, callback);
+    }
+
+    private void cleanUpSheet(AccessibilityNodeInfo root, int sh, int token, int backsLeft,
+                              String reason, CompletionCallback callback) {
+        if (isStale(token)) return;
+        AccessibilityNodeInfo r = getBestRootNode(root);
+        boolean open = (r != null && hasEditText(r)) || findSendLikeAnywhere(r, sh) != null;
+        if (open && backsLeft > 0) {
+            Log.w(TAG, "Closing the unsent like sheet with BACK.");
+            service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_BACK);
+            handler.postDelayed(
+                    () -> cleanUpSheet(root, sh, token, backsLeft - 1, reason, callback),
+                    CLEANUP_BACK_WAIT_MS);
+            return;
+        }
+        finishFlow();
+        if (callback != null) {
+            callback.onRightSwipeCompleted(false, reason);
         }
     }
 
@@ -355,6 +439,7 @@ public class RightSwipeExecutor {
      * Always paired with {@link #restoreKeyboard()}.
      */
     private boolean suppressKeyboard() {
+        if (!SUPPRESS_KEYBOARD) return false;
         try {
             AccessibilityService.SoftKeyboardController c = service.getSoftKeyboardController();
             if (c == null) return false;
@@ -371,6 +456,7 @@ public class RightSwipeExecutor {
 
     /** Gives the user their normal keyboard behaviour back. Safe to call repeatedly. */
     private void restoreKeyboard() {
+        if (!SUPPRESS_KEYBOARD) return;
         try {
             AccessibilityService.SoftKeyboardController c = service.getSoftKeyboardController();
             if (c != null) c.setShowMode(previousKeyboardMode);
@@ -496,46 +582,156 @@ public class RightSwipeExecutor {
         return false;
     }
 
-    private AccessibilityNodeInfo findSendLikeNode(AccessibilityNodeInfo root) {
+    /**
+     * Finds the visible "Send Like" control. Unlike the old version this NEVER prunes a whole
+     * subtree because a container is labelled "comment"/"tab"/"nav" - Send Like lives inside the
+     * comment sheet, so that pruning hid it and caused the missed second click.
+     * If several nodes match, the clickable one lowest on screen wins.
+     */
+    private AccessibilityNodeInfo findSendLikeNode(AccessibilityNodeInfo root, int sh) {
         if (root == null) return null;
-        return findSendLikeButtonRecursive(root);
+        List<AccessibilityNodeInfo> found = new ArrayList<>();
+        collectSendLike(root, found, 0);
+
+        AccessibilityNodeInfo best = null;
+        int bestScore = Integer.MIN_VALUE;
+        for (AccessibilityNodeInfo n : found) {
+            Rect r = new Rect();
+            n.getBoundsInScreen(r);
+            if (!n.isVisibleToUser() || r.width() <= 0 || r.height() <= 0) continue;
+            boolean clickable = n.isClickable() || hasClickableSelfOrAncestor(n);
+            int score = r.centerY() + (clickable ? sh : 0);
+            if (score > bestScore) {
+                bestScore = score;
+                best = n;
+            }
+        }
+        return best;
     }
 
-    private AccessibilityNodeInfo findSendLikeButtonRecursive(AccessibilityNodeInfo node) {
-        if (node == null) return null;
+    /** Looks for Send Like in the given root first, then in every other app window (bottom sheets/dialogs). */
+    private AccessibilityNodeInfo findSendLikeAnywhere(AccessibilityNodeInfo primary, int sh) {
+        AccessibilityNodeInfo n = primary != null ? findSendLikeNode(primary, sh) : null;
+        if (n != null) return n;
+        try {
+            List<AccessibilityWindowInfo> windows = service.getWindows();
+            if (windows == null) return null;
+            for (AccessibilityWindowInfo w : windows) {
+                if (w == null || w.getType() != AccessibilityWindowInfo.TYPE_APPLICATION) continue;
+                AccessibilityNodeInfo wr = w.getRoot();
+                if (wr == null) continue;
+                n = findSendLikeNode(wr, sh);
+                if (n != null) return n;
+            }
+        } catch (Exception ignored) { }
+        return null;
+    }
 
-        // Strictly bypass EditText / comment text boxes
+    private void collectSendLike(AccessibilityNodeInfo node, List<AccessibilityNodeInfo> out, int depth) {
+        if (node == null || depth > 60) return;
+
+        // Never match (or look inside) the comment text box itself.
         CharSequence className = node.getClassName();
-        if (className != null && className.toString().contains("EditText")) {
-            return null;
-        }
+        if (className != null && className.toString().contains("EditText")) return;
 
-        CharSequence text = node.getText();
-        CharSequence desc = node.getContentDescription();
-        String viewId     = node.getViewIdResourceName();
+        String t = lower(node.getText());
+        String d = lower(node.getContentDescription());
+        String v = lower(node.getViewIdResourceName());
 
-        String t = text != null ? text.toString().toLowerCase(Locale.ROOT) : "";
-        String d = desc != null ? desc.toString().toLowerCase(Locale.ROOT) : "";
-        String v = viewId != null ? viewId.toLowerCase(Locale.ROOT) : "";
+        boolean isRose = t.contains("rose") || d.contains("rose") || v.contains("rose");
+        boolean isSend = t.contains("send like") || d.contains("send like")
+                || t.contains("send a like") || d.contains("send a like")
+                || t.contains("send_like") || d.contains("send_like")
+                || (t.startsWith("send") && t.contains("like"))
+                || (d.startsWith("send") && d.contains("like"))
+                || t.equals("send") || d.equals("send")
+                || ((node.isClickable() || hasClickableSelfOrAncestor(node)) && t.startsWith("send") && t.length() <= 28)
+                || ((node.isClickable() || hasClickableSelfOrAncestor(node)) && d.startsWith("send") && d.length() <= 28)
+                || (t.equals("like") && (node.isClickable() || hasClickableSelfOrAncestor(node)))
+                || (d.equals("like") && (node.isClickable() || hasClickableSelfOrAncestor(node)))
+                || v.contains("send_like") || v.contains("sendlike") || v.contains("send_button")
+                || v.contains("send_btn") || v.contains("submit_like") || v.contains("like_button")
+                || v.contains("comment_send") || v.contains("send_prompt");
 
-        String combined = t + " " + d + " " + v;
-
-        if (combined.contains("rose") || combined.contains("comment") || combined.contains("tab") || combined.contains("nav")) {
-            return null;
-        }
-
-        boolean isSendMatch = (t.contains("send like") || d.contains("send like") || v.contains("send_like") ||
-                t.equalsIgnoreCase("send") || d.equalsIgnoreCase("send") || v.contains("send_button"));
-
-        if (isSendMatch) {
-            return node;
+        if (isSend && !isRose) {
+            out.add(node);
         }
 
         for (int i = 0; i < node.getChildCount(); i++) {
-            AccessibilityNodeInfo match = findSendLikeButtonRecursive(node.getChild(i));
-            if (match != null) return match;
+            collectSendLike(node.getChild(i), out, depth + 1);
         }
-        return null;
+    }
+
+    /** True if a sibling of this node is the comment field (so a bare "Like" button is the send button). */
+    private boolean hasEditTextSibling(AccessibilityNodeInfo node) {
+        AccessibilityNodeInfo p = node.getParent();
+        return p != null && hasEditText(p, 0);
+    }
+
+    private boolean hasEditText(AccessibilityNodeInfo node) {
+        return hasEditText(node, 0);
+    }
+
+    private boolean hasEditText(AccessibilityNodeInfo node, int depth) {
+        if (node == null || depth > 60) return false;
+        CharSequence className = node.getClassName();
+        if (className != null && className.toString().contains("EditText")) return true;
+        for (int i = 0; i < node.getChildCount(); i++) {
+            if (hasEditText(node.getChild(i), depth + 1)) return true;
+        }
+        return false;
+    }
+
+    /** Logs the clickable controls in the lower half so a changed Send Like label can be spotted. */
+    /** Logs every node of every window (tag RightSwipeExecutor) so the real Send Like label can be seen. */
+    private void dumpAllWindows() {
+        try {
+            List<AccessibilityWindowInfo> windows = service.getWindows();
+            if (windows == null) return;
+            for (AccessibilityWindowInfo w : windows) {
+                if (w == null) continue;
+                Log.w(TAG, "==== WINDOW type=" + w.getType() + " active=" + w.isActive() + " ====");
+                AccessibilityNodeInfo wr = w.getRoot();
+                if (wr != null) dumpTree(wr, 0, new int[]{0});
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "dumpAllWindows failed", e);
+        }
+    }
+
+    private void dumpTree(AccessibilityNodeInfo n, int depth, int[] count) {
+        if (n == null || depth > 40 || count[0] >= 250) return;
+        count[0]++;
+        Rect r = new Rect();
+        n.getBoundsInScreen(r);
+        StringBuilder pad = new StringBuilder();
+        for (int i = 0; i < depth; i++) pad.append(' ');
+        Log.w(TAG, pad + "" + n.getClassName() + " text=" + n.getText() + " desc=" + n.getContentDescription()
+                + " id=" + n.getViewIdResourceName() + " click=" + n.isClickable()
+                + " vis=" + n.isVisibleToUser() + " " + r);
+        for (int i = 0; i < n.getChildCount(); i++) dumpTree(n.getChild(i), depth + 1, count);
+    }
+
+    private void dumpLowerHalf(AccessibilityNodeInfo root, int sh) {
+        if (root == null) return;
+        Log.w(TAG, "---- lower-half dump (Send Like not found) ----");
+        dumpLowerHalf(root, sh, 0, new int[]{0});
+    }
+
+    private void dumpLowerHalf(AccessibilityNodeInfo node, int sh, int depth, int[] lines) {
+        if (node == null || depth > 60 || lines[0] >= 30) return;
+        Rect r = new Rect();
+        node.getBoundsInScreen(r);
+        if ((node.isClickable() || node.getText() != null || node.getContentDescription() != null)
+                && r.centerY() > sh * 0.5f) {
+            lines[0]++;
+            Log.w(TAG, "  " + node.getClassName() + " text=" + node.getText()
+                    + " desc=" + node.getContentDescription() + " id=" + node.getViewIdResourceName()
+                    + " clickable=" + node.isClickable() + " " + r);
+        }
+        for (int i = 0; i < node.getChildCount(); i++) {
+            dumpLowerHalf(node.getChild(i), sh, depth + 1, lines);
+        }
     }
 
     private void clearEditTextFocus(AccessibilityNodeInfo node) {
@@ -593,22 +789,32 @@ public class RightSwipeExecutor {
         afterTap.run();
     }
 
-    private boolean performNodeClickProgrammaticOnly(AccessibilityNodeInfo node) {
+    /**
+     * Presses Send Like. Tries the node, then only ancestors that are button-sized (never the whole
+     * sheet or card), then a real touch at the node's centre. Returns true if something was
+     * pressed; the caller still VERIFIES the sheet closed.
+     */
+    private boolean clickSendLike(AccessibilityNodeInfo node, int sw, int sh) {
         if (node == null) return false;
 
-        if (node.isClickable() && node.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-            return true;
-        }
+        Rect r = new Rect();
+        node.getBoundsInScreen(r);
 
-        AccessibilityNodeInfo p = node.getParent();
-        while (p != null) {
-            if (p.isClickable() && p.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+        // 1. Dispatch real touch gesture to the Send Like button bounds
+        if (r.centerX() > 0 && r.centerY() > 0 && r.width() <= sw && r.height() <= sh * 0.25f) {
+            int x = jitterWithin(r.left, r.right);
+            int y = jitterWithin(r.top, r.bottom);
+            boolean dispatched = dispatchTapAt(x, y, randomBetween(TAP_MIN_MS, TAP_MAX_MS), null);
+            if (dispatched) {
+                Log.i(TAG, "Dispatched touch gesture to Send Like button at (" + x + ", " + y + ")");
+                // Complement with accessibility click fallback
+                performNodeClick(node);
                 return true;
             }
-            p = p.getParent();
         }
 
-        return false;
+        // 2. Fallback: Accessibility click on node or clickable parent
+        return performNodeClick(node);
     }
 
     private boolean performNodeClick(AccessibilityNodeInfo node) {
@@ -670,7 +876,10 @@ public class RightSwipeExecutor {
     }
 
     private static String lower(CharSequence cs) {
-        return cs != null ? cs.toString().toLowerCase(Locale.ROOT) : "";
+        return cs != null
+                ? cs.toString().replace((char) 0x00A0, ' ').replace("" + (char) 0x200B, "").trim()
+                .replaceAll("\\s+", " ").toLowerCase(Locale.ROOT)
+                : "";
     }
 
     private static boolean containsAny(String haystack, String[] needles) {

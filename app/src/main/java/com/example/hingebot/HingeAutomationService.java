@@ -59,6 +59,9 @@ public class HingeAutomationService extends AccessibilityService implements IAut
     private static final int MAX_CONSECUTIVE_LEFT_FAILURES = 5;
     private int consecutiveLeftFailures = 0;
 
+    private static final int MAX_CONSECUTIVE_RIGHT_FAILURES = 6;
+    private int consecutiveRightFailures = 0;
+
     private boolean stepInFlight = false;
     private AccessibilityNodeInfo lastEventRoot = null;
     private String currentSessionId = null;
@@ -131,6 +134,7 @@ public class HingeAutomationService extends AccessibilityService implements IAut
 
         stepInFlight = false;
         consecutiveLeftFailures = 0;
+        consecutiveRightFailures = 0;
         currentSessionId = "sess_" + System.currentTimeMillis();
         sessionStartTimestampMs = System.currentTimeMillis();
 
@@ -247,11 +251,21 @@ public class HingeAutomationService extends AccessibilityService implements IAut
 
         rightSwipeExecutor.execute(root, screenBounds, (success, statusMessage) -> {
             if (success) {
+                consecutiveRightFailures = 0;
                 stateMachine.recordStepSuccess();
                 sessionRepository.incrementRightCount();
                 broadcastStatus("RIGHT ✓ (" + stateMachine.getRightCount() + " rights)");
             } else {
+                // The like was NOT sent: do not advance, so the same profile is retried with RIGHT.
                 stateMachine.recordStepSkipped(statusMessage);
+                consecutiveRightFailures++;
+                if (consecutiveRightFailures >= MAX_CONSECUTIVE_RIGHT_FAILURES) {
+                    stopAutomation("Like could not be sent after " + consecutiveRightFailures
+                            + " tries - see logcat tag RightSwipeExecutor");
+                    return;
+                }
+                broadcastStatus(statusMessage + " (retry " + consecutiveRightFailures + "/"
+                        + MAX_CONSECUTIVE_RIGHT_FAILURES + ")");
             }
 
             if (stateMachine.isRunning()) {
