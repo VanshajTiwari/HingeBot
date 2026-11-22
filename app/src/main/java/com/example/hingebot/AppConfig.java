@@ -4,6 +4,8 @@ import android.content.Context;
 import android.content.SharedPreferences;
 
 public class AppConfig {
+    public static final String BACKEND_BASE_URL = "https://smartdiscovertbackend.vercel.app/api/v1";
+
     private static final String PREF_NAME = "hingebot_prefs";
     private static final String KEY_RUNNING = "automation_running";
     private static final String KEY_LIKES = "total_likes";

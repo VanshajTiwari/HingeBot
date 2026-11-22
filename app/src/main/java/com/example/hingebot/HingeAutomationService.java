@@ -61,6 +61,8 @@ public class HingeAutomationService extends AccessibilityService implements IAut
 
     private boolean stepInFlight = false;
     private AccessibilityNodeInfo lastEventRoot = null;
+    private String currentSessionId = null;
+    private long sessionStartTimestampMs = 0;
 
     // ── AccessibilityService lifecycle ────────────────────────────────────────
 
@@ -80,6 +82,9 @@ public class HingeAutomationService extends AccessibilityService implements IAut
 
         rightSwipeExecutor = new RightSwipeExecutor(this);
         leftSwipeExecutor  = new LeftSwipeExecutor(this);
+
+        // Register device on service connect
+        BackendApiClient.registerDevice(this, null);
 
         Log.i(TAG, "Service connected — SmartDiscovery ready.");
         broadcastStatus("Ready");
@@ -126,11 +131,18 @@ public class HingeAutomationService extends AccessibilityService implements IAut
 
         stepInFlight = false;
         consecutiveLeftFailures = 0;
+        currentSessionId = "sess_" + System.currentTimeMillis();
+        sessionStartTimestampMs = System.currentTimeMillis();
+
         stateMachine.start();
         sessionRepository.resetSession();
         sessionRepository.saveSessionState(SessionState.RUNNING);
+
+        // Checklist Item 5: POST /sessions/start
+        BackendApiClient.startSession(this, currentSessionId, null);
+
         broadcastStatus("Running");
-        Log.i(TAG, "Automation started — sequence: " + Arrays.toString(SequenceConfig.SEQUENCE));
+        Log.i(TAG, "Automation started — session: " + currentSessionId);
         scheduleStep(SequenceConfig.INITIAL_DELAY_MS);
     }
 
@@ -164,6 +176,21 @@ public class HingeAutomationService extends AccessibilityService implements IAut
         stepInFlight = false;
         stateMachine.stop(reason);
         sessionRepository.saveSessionState(SessionState.STOPPED);
+
+        long durationSec = sessionStartTimestampMs > 0 ? (System.currentTimeMillis() - sessionStartTimestampMs) / 1000 : 0;
+        String backendReason = "MANUAL_STOP";
+        if (reason != null) {
+            String lower = reason.toLowerCase(Locale.ROOT);
+            if (lower.contains("cap") || lower.contains("limit")) backendReason = "CAP_REACHED";
+            else if (lower.contains("daily")) backendReason = "DAILY_LIMIT";
+            else if (lower.contains("error") || lower.contains("tries")) backendReason = "ERROR";
+        }
+
+        // Checklist Item 5: POST /sessions/stop
+        if (currentSessionId != null) {
+            BackendApiClient.stopSession(this, currentSessionId, backendReason, durationSec, null);
+        }
+
         broadcastStatus("Stopped: " + reason);
         Log.i(TAG, "Automation stopped — " + reason);
     }
@@ -352,5 +379,9 @@ public class HingeAutomationService extends AccessibilityService implements IAut
         SessionState st = stateMachine != null ? stateMachine.getState() : SessionState.IDLE;
         intent.putExtra(EXTRA_SESSION_STATE, st.name());
         sendBroadcast(intent);
+
+        // Checklist Item 4: POST /sessions/heartbeat with sessionId, deviceId, state, counts, duration
+        long durationSec = sessionStartTimestampMs > 0 ? (System.currentTimeMillis() - sessionStartTimestampMs) / 1000 : 0;
+        BackendApiClient.sendHeartbeat(this, currentSessionId, st, right, left, total, durationSec);
     }
 }

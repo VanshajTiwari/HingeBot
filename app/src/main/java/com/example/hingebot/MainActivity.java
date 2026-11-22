@@ -88,6 +88,9 @@ public class MainActivity extends AppCompatActivity {
         bindViews();
         setupButtons();
         observeViewModel();
+
+        // Checklist Item 2: Device Registration on App Launch
+        BackendApiClient.registerDevice(this, null);
     }
 
     @Override
