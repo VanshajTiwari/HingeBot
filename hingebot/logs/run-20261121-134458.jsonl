@@ -1,0 +1,4 @@
+{"event":"summary","cycles_done":0,"total_likes":0,"total_skips":0,"duration_ms":5,"stop_reason":"stopped"}
+{"event":"summary","cycles_done":0,"total_likes":0,"total_skips":0,"duration_ms":0,"stop_reason":"stopped"}
+{"timestamp":"2026-11-21T13:44:58","cycle":1,"step":1,"total_steps":1,"action":"LIKE","status":"out_of_likes","total":0,"likes":0,"skips":0,"dry_run":true}
+{"event":"summary","cycles_done":0,"total_likes":0,"total_skips":0,"duration_ms":30,"stop_reason":"daily like limit reached"}

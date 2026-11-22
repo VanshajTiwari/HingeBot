@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="co.hinge.app" content-desc="" clickable="false" bounds="[0,0][1080,2400]">
+    <node index="0" text="You're out of likes for today" resource-id="co.hinge.app:id/title" class="android.widget.TextView" package="co.hinge.app" content-desc="You're out of likes for today" clickable="false" bounds="[100,800][980,950]" />
+    <node index="1" text="Get Hinge Plus to send unlimited likes." resource-id="co.hinge.app:id/subtitle" class="android.widget.TextView" package="co.hinge.app" content-desc="" clickable="false" bounds="[100,960][980,1100]" />
+  </node>
+</hierarchy>

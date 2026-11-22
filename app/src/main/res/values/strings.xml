@@ -1,0 +1,27 @@
+<resources>
+    <string name="app_name">SmartDiscovery</string>
+    <string name="accessibility_service_label">SmartDiscovery Automation</string>
+    <string name="accessibility_service_description">Executes the configured swipe sequence (RIGHT RIGHT LEFT LEFT LEFT) inside the target application. No data is collected.</string>
+
+    <!-- Main screen -->
+    <string name="header_title">HingeBot Automation</string>
+    <string name="header_subtitle">Accessibility Swipe Tool — Dynamic 10-Swipe Cycle</string>
+
+    <string name="section_setup">Setup</string>
+    <string name="setup_caption">Complete these steps once before starting.</string>
+    <string name="btn_accessibility">1. Accessibility</string>
+    <string name="btn_overlay">2. Overlay</string>
+
+    <string name="section_stats">Live Statistics</string>
+    <string name="label_total">TOTAL INTERACTIONS</string>
+    <string name="label_right">RIGHT COUNT</string>
+    <string name="label_left">LEFT COUNT</string>
+
+    <string name="section_controls">Automation Controls</string>
+    <string name="controls_caption">Start, pause or stop the swipe session.</string>
+    <string name="btn_start">Start</string>
+    <string name="btn_pause">Pause</string>
+    <string name="btn_resume">Resume</string>
+    <string name="btn_stop">Stop</string>
+    <string name="btn_reset">Reset Session</string>
+</resources>

@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>
+<hierarchy rotation="0">
+  <node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="co.hinge.app" content-desc="" clickable="false" bounds="[0,0][1080,2400]">
+    <node index="0" text="Jane, 26" resource-id="co.hinge.app:id/name_age" class="android.widget.TextView" package="co.hinge.app" content-desc="Jane, 26" clickable="false" bounds="[50,200][500,280]" />
+    <node index="1" text="" resource-id="co.hinge.app:id/like_button" class="android.widget.ImageView" package="co.hinge.app" content-desc="Like" clickable="true" bounds="[900,1600][1020,1720]" />
+    <node index="2" text="" resource-id="co.hinge.app:id/skip_button" class="android.widget.ImageView" package="co.hinge.app" content-desc="Skip" clickable="true" bounds="[80,2100][200,2220]" />
+  </node>
+</hierarchy>

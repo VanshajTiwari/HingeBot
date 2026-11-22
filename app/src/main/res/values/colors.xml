@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Legacy template colors (kept so nothing referencing them breaks) -->
+    <color name="purple_200">#FFBB86FC</color>
+    <color name="purple_500">#FF6200EE</color>
+    <color name="purple_700">#FF3700B3</color>
+    <color name="teal_200">#FF03DAC5</color>
+    <color name="teal_700">#FF018786</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+
+    <!-- Brand (same in light & dark) -->
+    <color name="hinge_primary">#FF6C2BD9</color>
+    <color name="hinge_dark">#FF1A0033</color>
+    <color name="hero_start">#FF2A0B5E</color>
+    <color name="hero_end">#FF6C2BD9</color>
+
+    <!-- Action buttons (same in light & dark, all pass 4.5:1 with white text) -->
+    <color name="action_green">#FF1E8E4E</color>
+    <color name="action_amber">#FFB45309</color>
+    <color name="action_red">#FFC62828</color>
+
+    <!-- Semantic status text colors (overridden in values-night) -->
+    <color name="status_green">#FF1E8E4E</color>
+    <color name="status_red">#FFC62828</color>
+
+    <!-- Surfaces & text (light) -->
+    <color name="app_bg">#FFF4F2FA</color>
+    <color name="card_bg">#FFFFFFFF</color>
+    <color name="stroke">#FFE6E2F0</color>
+    <color name="stroke_strong">#FFCFC8E0</color>
+    <color name="tile_bg">#FFF4F2FA</color>
+    <color name="text_primary">#FF1B1530</color>
+    <color name="text_secondary">#FF6B6580</color>
+    <color name="brand_text">#FF6C2BD9</color>
+    <color name="brand_tint_bg">#FFEFE7FD</color>
+    <color name="tile_right_bg">#FFEFE8FD</color>
+    <color name="tile_left_bg">#FFE0F5F2</color>
+    <color name="tile_left_text">#FF0F766E</color>
+    <color name="disabled_bg">#FFE7E4EF</color>
+    <color name="disabled_text">#FFA19BB3</color>
+</resources>
